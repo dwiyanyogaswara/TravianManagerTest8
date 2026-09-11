@@ -1650,22 +1650,29 @@ class FarmAutomationService : Service() {
         debugTrace("ENTER inspectUpgradeResources")
         if (!running || !builderInProgress) return
 
-        // ALUR UTAMA RESOURCE BUILDER:
-        // 1. Setelah masuk halaman resource, cari BUTTON yang teksnya mengandung
-        //    "Upgrade to level" dan dalam kondisi ENABLED.
-        // 2. Jika ada -> langsung klik Upgrade. JANGAN buka Hero.
-        // 3. Jika tidak ada -> resource dianggap belum cukup, lalu jalankan
-        //    mekanisme Hero -> Transfer Selected -> Upgrade yang sudah bekerja.
         val currentUrl = automationWebView()?.url.orEmpty()
         if (!currentUrl.contains("build.php", ignoreCase = true) ||
             currentUrl.contains("gid=16", ignoreCase = true)) {
-            logEvent("Resource Builder: halaman target bukan build.php resource; URL=$currentUrl; membuka ulang target tersimpan")
+            logEvent("Resource Builder: halaman target bukan build.php; URL=$currentUrl; membuka ulang target tersimpan")
             builderStage = "OPEN_RESOURCE"
             handler.postDelayed({ openSavedBuilderResource() }, 400L)
             return
         }
 
         builderStage = "INSPECT_UPGRADE"
+
+        // ALUR UTAMA YANG DIMINTA:
+        // Setelah masuk halaman resource, cukup cek apakah ada BUTTON dengan
+        // tulisan yang mengandung "Upgrade to level".
+        //
+        // ADA    -> langsung klik Upgrade.
+        // TIDAK ADA -> jalur Hero lama yang sudah terbukti berhasil:
+        //              buka resource Hero -> Transfer Selected -> verifikasi
+        //              -> Upgrade.
+        //
+        // Jangan gunakan perhitungan biaya/resource sebagai penentu cabang,
+        // karena Travian sendiri sudah menentukan ketersediaan upgrade lewat
+        // tombol Upgrade to level.
         val js = """
             (() => {
                 const visible = el => {
@@ -1674,95 +1681,31 @@ class FarmAutomationService : Service() {
                     return s.display !== 'none' && s.visibility !== 'hidden' &&
                            s.opacity !== '0' && r.width > 0 && r.height > 0;
                 };
-                const textOf = el => String(
-                    el.innerText || el.textContent || el.value || el.title ||
-                    el.getAttribute('aria-label') || ''
-                ).replace(/\s+/g, ' ').trim();
+                const norm = s => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
 
-                // INI SATU-SATUNYA PENENTUAN RESOURCE CUKUP.
-                // Contoh yang benar:
-                // <button ... class="textButtonV1 green build">
-                //     Upgrade to level 4
-                // </button>
-                const controls = [
-                    ...document.querySelectorAll('button'),
-                    ...document.querySelectorAll('input[type=button],input[type=submit]'),
-                    ...document.querySelectorAll('[role="button"]'),
-                    ...document.querySelectorAll('a')
-                ];
+                const buttons = [...document.querySelectorAll('button')]
+                    .filter(visible)
+                    .filter(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true');
 
-                const upgradeButton = controls.find(el => {
-                    if (!visible(el)) return false;
-                    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
-                    const t = textOf(el);
-                    if (!/upgrade\s+to\s+level/i.test(t)) return false;
-                    // Jangan pernah memilih speed-up / gold / master-builder.
-                    return !/faster|master builder|gold|cancel|demolish|destroy|remove/i.test(t);
-                });
+                const upgradeButton = buttons.find(el =>
+                    /upgrade\\s+to\\s+level/i.test(
+                        el.innerText || el.textContent || el.value || el.title ||
+                        el.getAttribute('aria-label') || ''
+                    )
+                );
 
                 if (upgradeButton) {
                     return JSON.stringify({
-                        state: 'UPGRADE_AVAILABLE',
-                        text: textOf(upgradeButton).slice(0,160),
+                        state: 'upgrade_available',
+                        text: norm(upgradeButton.innerText || upgradeButton.textContent || upgradeButton.value || '').slice(0, 200),
                         tag: upgradeButton.tagName,
-                        className: String(upgradeButton.className || '').slice(0,200)
+                        id: upgradeButton.id || '',
+                        className: String(upgradeButton.className || '').slice(0, 200)
                     });
                 }
 
-                // Tidak ada tombol "Upgrade to level" yang ENABLED.
-                // Untuk kasus ini jalur Hero digunakan. Kita tetap hitung deficit
-                // agar jumlah resource Hero yang diisi tetap tepat.
-                const num = s => {
-                    const raw = String(s || '').replace(/[^0-9.,-]/g, '').replace(/,/g, '');
-                    const n = parseInt(raw, 10);
-                    return Number.isFinite(n) ? n : 0;
-                };
-                const current = [1,2,3,4].map(i => {
-                    const el = document.querySelector('#l' + i);
-                    const text = el ? (el.innerText || el.textContent || el.getAttribute('title') || '') : '';
-                    return num(text.split('/')[0]);
-                });
-
-                const costs = [0,0,0,0];
-                const root = document;
-                for (let i=1;i<=4;i++) {
-                    const nodes = [...root.querySelectorAll('img.r'+i+', .r'+i+', [class~="r'+i+'"]')];
-                    for (const node of nodes) {
-                        let text = '';
-                        let sibling = node.nextSibling;
-                        for (let j=0; j<5 && sibling; j++, sibling=sibling.nextSibling) {
-                            text += ' ' + (sibling.textContent || '');
-                            if (/\d/.test(text)) break;
-                        }
-                        let matches = text.match(/\d[\d.,]*/g) || [];
-                        if (!matches.length && node.parentElement) {
-                            text = node.parentElement.innerText || node.parentElement.textContent || '';
-                            matches = text.match(/\d[\d.,]*/g) || [];
-                        }
-                        if (matches.length) {
-                            const candidate = num(matches[0]);
-                            if (candidate > costs[i-1]) costs[i-1] = candidate;
-                        }
-                    }
-                }
-
-                // Fallback biaya dari teks halaman.
-                if (!costs.some(x => x > 0)) {
-                    const text = (document.body.innerText || document.body.textContent || '').replace(/\s+/g,' ');
-                    const names = ['lumber','clay','iron','crop'];
-                    for (let i=0;i<4;i++) {
-                        const re = new RegExp(names[i] + '[^0-9]{0,60}(\\d[\\d.,]*)', 'i');
-                        const m = text.match(re);
-                        if (m) costs[i] = num(m[1]);
-                    }
-                }
-
-                const deficit = costs.map((c,i) => Math.max(0, c - current[i]));
                 return JSON.stringify({
-                    state: 'HERO_REQUIRED',
-                    current,
-                    costs,
-                    deficit
+                    state: 'hero_required'
                 });
             })();
         """.trimIndent()
@@ -1770,45 +1713,18 @@ class FarmAutomationService : Service() {
         automationWebView()?.evaluateJavascript(js) { raw ->
             val result = raw.orEmpty().trim('"').replace("\\\"", "\"")
 
-            if (result.contains("\"state\":\"UPGRADE_AVAILABLE\"")) {
-                // PRIORITAS: tombol Upgrade to level ditemukan -> langsung upgrade.
-                val textMatch = Regex("\\\"text\\\":\\\"([^\\\"]*)").find(result)?.groupValues?.getOrNull(1).orEmpty()
-                logEvent("Resource Builder: tombol '$textMatch' tersedia — langsung klik Upgrade, tanpa Hero")
+            if (result.contains("\"state\":\"upgrade_available\"")) {
+                logEvent("Resource Builder: ditemukan button 'Upgrade to level' — langsung klik Upgrade")
                 heroTransferCompleted = false
-                pendingUpgradeCosts = longArrayOf(0L,0L,0L,0L)
-                pendingUpgradeUrl = ""
-                handler.postDelayed({ clickResourceUpgrade() }, 250L)
-                return@evaluateJavascript
-            }
-
-            if (result.contains("\"state\":\"HERO_REQUIRED\"")) {
-                val deficitMatch = Regex("\"deficit\":\\[(.*?)\\]").find(result)
-                val deficit = deficitMatch?.groupValues?.get(1)?.split(',')?.mapNotNull { it.trim().toLongOrNull() } ?: emptyList()
-
-                if (deficit.size >= 4) {
-                    pendingUpgradeCosts = LongArray(4) {
-                        val v = deficit[it].coerceAtLeast(0L)
-                        if (v == 0L) 0L else ((v + 99L) / 100L) * 100L
-                    }
-                    heroTransferCompleted = false
-                    pendingUpgradeUrl = automationWebView()?.url.orEmpty().ifBlank { "$server/build.php" }
-                    logEvent("Resource Builder: tombol 'Upgrade to level' tidak tersedia/enabled — jalur Hero; kebutuhan=${pendingUpgradeCosts.joinToString(",")}")
-                    inventoryUseAttempt = 0
-                    updateNotification("Resource Builder — transfer resource Hero")
-                    clickRedResourceForTransfer()
-                } else {
-                    logEvent("Resource Builder: tidak ada tombol 'Upgrade to level' dan biaya tidak terbaca; village dilewati")
-                    goToNextBuilderVillage()
-                }
-                return@evaluateJavascript
-            }
-
-            if (builderAttempt < 5) {
-                builderAttempt++
-                handler.postDelayed({ inspectUpgradeResources() }, 700L)
+                pendingUpgradeCosts = longArrayOf(0L, 0L, 0L, 0L)
+                clickResourceUpgrade()
             } else {
-                logEvent("Resource Builder: gagal membaca tombol Upgrade to level; village dilewati")
-                goToNextBuilderVillage()
+                logEvent("Resource Builder: button 'Upgrade to level' tidak ditemukan — masuk jalur Hero Transfer")
+                pendingUpgradeCosts = longArrayOf(0L, 0L, 0L, 0L)
+                pendingUpgradeUrl = automationWebView()?.url.orEmpty().ifBlank { "$server/build.php" }
+                inventoryUseAttempt = 0
+                updateNotification("Resource Builder — transfer resource Hero")
+                clickRedResourceForTransfer()
             }
         }
     }
@@ -1917,11 +1833,7 @@ class FarmAutomationService : Service() {
                     debugTrace(
                         "HERO TRANSFER: BERHASIL klik .inlineIcon.resource.transfer"
                     )
-                    // Popup Transfer resources baru saja terbuka. Jangan langsung klik
-                    // Transfer Selected karena tombol masih DISABLED selama semua input = 0.
-                    // Isi dulu kebutuhan resource dari Hero, lalu fillHeroResourceDialog()
-                    // akan menekan Transfer Selected setelah input valid.
-                    handler.postDelayed({ fillHeroResourceDialog() }, 900L)
+                    handler.postDelayed({ clickTransferSelected() }, 900L)
                 } else if (attempt < 8) {
                     debugTrace(
                         "HERO TRANSFER: resource transfer belum siap/gagal " +
@@ -2231,28 +2143,10 @@ private fun clickTransferSelected() {
                 }
                 if (!found) return 'no_amount_inputs';
                 const buttons = [...document.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')]
-                    .filter(x => {
-                        const cs = getComputedStyle(x), r = x.getBoundingClientRect();
-                        return cs.display !== 'none' && cs.visibility !== 'hidden' &&
-                               r.width > 0 && r.height > 0 && !x.disabled &&
-                               x.getAttribute('aria-disabled') !== 'true';
-                    });
+                    .filter(x => x.offsetParent !== null && !x.disabled);
                 const norm = x => (x || '').replace(/\s+/g,' ').trim().toLowerCase();
-
-                // Transfer Selected harus menjadi target UTAMA. Jangan sampai
-                // tombol lain di dialog (mis. close/confirm/use) ikut terklik.
-                const confirm = buttons.find(x => /transfer\s+selected/i.test(
-                    norm(x.innerText || x.textContent || x.value || x.title || x.getAttribute('aria-label'))
-                ));
+                const confirm = buttons.find(x => /confirm|use|transfer|send|ok|done|accept/.test(norm(x.innerText || x.textContent || x.value || x.title || x.getAttribute('aria-label'))));
                 if (!confirm) return 'no_confirm';
-
-                const confirmText = norm(confirm.innerText || confirm.textContent || confirm.value || confirm.title || confirm.getAttribute('aria-label'));
-                const beforeDisabled = !!confirm.disabled || confirm.getAttribute('aria-disabled') === 'true';
-                if (beforeDisabled || /disabled/.test(String(confirm.className || '').toLowerCase())) {
-                    return 'confirm_disabled';
-                }
-
-                confirm.scrollIntoView({block:'center', inline:'center'});
                 confirm.click();
                 return 'confirmed';
             })();
@@ -2266,7 +2160,7 @@ private fun clickTransferSelected() {
                         automationWebView()?.loadUrl(pendingUpgradeUrl)
                     }, 900)
                 }
-                result == "no_amount_inputs" || result == "no_confirm" || result == "confirm_disabled" -> {
+                result == "no_amount_inputs" || result == "no_confirm" -> {
                     if (inventoryUseAttempt < 5) handler.postDelayed({ fillHeroResourceDialog() }, 800)
                     else {
                         logEvent("Resource Builder: dialog penggunaan resource Hero tidak dikenali")
@@ -2301,28 +2195,21 @@ private fun clickTransferSelected() {
                     return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
                 };
                 const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
-                const all = [...document.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')];
+                const root = document.querySelector('#build, #villageContent') || document.body;
+                const all = [...root.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')];
                 const candidates = all.filter(el => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
-                const textOf = el => norm(el.innerText || el.textContent || el.value || el.title || el.getAttribute('aria-label') || '');
-
-                // Prioritas MUTLAK: tombol upgrade resource normal.
-                // Hindari tombol speed-up/master builder/Gold.
-                let btn = candidates.find(el => {
-                    const text = textOf(el);
+                const btn = candidates.find(el => {
+                    const text = norm(el.innerText || el.textContent || el.value || el.title || el.getAttribute('aria-label'));
                     const cls = (el.className || '').toString().toLowerCase();
-                    if (/faster|master builder|gold|cancel|demolish|destroy|remove/.test(text + ' ' + cls)) return false;
-                    return /\bupgrade\s+to\s+level\s+\d+\b/i.test(text);
+                    const href = (el.getAttribute('href') || '').toLowerCase();
+                    if (/cancel|demolish|destroy|remove/.test(text + ' ' + cls)) return false;
+                    return /upgrade|upgrade to level|build/.test(text) ||
+                           /(?:^|\s)(green|build|upgrade)(?:\s|$)/.test(cls) ||
+                           /build\.php/.test(href);
+                }) || candidates.find(el => {
+                    const cls = (el.className || '').toString().toLowerCase();
+                    return /green/.test(cls) && /build|upgrade/.test(cls);
                 });
-
-                if (!btn) {
-                    btn = candidates.find(el => {
-                        const text = textOf(el);
-                        const cls = (el.className || '').toString().toLowerCase();
-                        if (/faster|master builder|gold|cancel|demolish|destroy|remove/.test(text + ' ' + cls)) return false;
-                        return /\bupgrade\b/i.test(text) && /green|textbuttonv1/.test(cls);
-                    });
-                }
-
                 if (!btn) return 'not-found';
                 btn.scrollIntoView({block:'center'});
                 const href = btn.getAttribute('href') || '';
