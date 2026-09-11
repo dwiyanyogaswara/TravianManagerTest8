@@ -1726,24 +1726,39 @@ class FarmAutomationService : Service() {
 
                 const all = [...root.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')];
                 const candidates = all.filter(el => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
-                const btn = candidates.find(el => {
-                    const text = norm(el.innerText || el.textContent || el.value || el.title || el.getAttribute('aria-label'));
+                const textOf = el => norm(el.innerText || el.textContent || el.value || el.title || el.getAttribute('aria-label'));
+
+                // PENTING: bila tombol upgrade normal sedang ENABLED, jangan pernah
+                // membuka Hero. Travian sendiri sudah menyatakan resource cukup.
+                // Prioritaskan tombol "Upgrade to level X" dan abaikan tombol
+                // Speed-up/Gold seperti "Upgrade 25% faster" atau "Construct with master builder".
+                const normalUpgrade = candidates.find(el => {
+                    const text = textOf(el);
                     const cls = (el.className || '').toString().toLowerCase();
                     const href = (el.getAttribute('href') || '').toLowerCase();
-                    if (/cancel|demolish|destroy|remove/.test(text + ' ' + cls)) return false;
-                    return /upgrade|upgrade to level|build/.test(text) ||
-                           /(?:^|\s)(green|build|upgrade)(?:\s|$)/.test(cls) ||
-                           /build\.php/.test(href);
-                }) || candidates.find(el => {
-                    const cls = (el.className || '').toString().toLowerCase();
-                    return /green/.test(cls) && /build|upgrade/.test(cls);
+                    if (/cancel|demolish|destroy|remove|faster|master builder|gold/.test(text + ' ' + cls)) return false;
+                    return /\bupgrade\s+to\s+level\s+\d+\b/i.test(text);
                 });
 
-                // Jika tombol Upgrade sudah enabled, Travian sendiri sudah menyatakan
-                // bahwa resource cukup. Jangan menggagalkan upgrade hanya karena parser
-                // biaya gagal membaca markup versi tertentu.
+                if (normalUpgrade) {
+                    return JSON.stringify({state:'ready_button', current, costs, deficit:[0,0,0,0], buttonText:textOf(normalUpgrade).slice(0,120)});
+                }
+
+                // Fallback untuk markup yang tidak memakai teks "Upgrade to level X".
+                const btn = candidates.find(el => {
+                    const text = textOf(el);
+                    const cls = (el.className || '').toString().toLowerCase();
+                    const href = (el.getAttribute('href') || '').toLowerCase();
+                    if (/cancel|demolish|destroy|remove|faster|master builder|gold/.test(text + ' ' + cls)) return false;
+                    return /\bupgrade\b/.test(text) ||
+                           /(?:^|\s)(green|build|upgrade)(?:\s|$)/.test(cls) ||
+                           /build\.php/.test(href);
+                });
+
+                // Jika tombol Upgrade normal enabled, resource cukup menurut UI.
+                // Jangan menggagalkan upgrade hanya karena parser biaya gagal.
                 if (btn && costs.some(x => x <= 0)) {
-                    return JSON.stringify({state:'ready_button', current, costs, deficit:[0,0,0,0]});
+                    return JSON.stringify({state:'ready_button', current, costs, deficit:[0,0,0,0], buttonText:textOf(btn).slice(0,120)});
                 }
 
                 if (costs.some(x => x <= 0)) return JSON.stringify({state:'costs_unknown', current, costs});
