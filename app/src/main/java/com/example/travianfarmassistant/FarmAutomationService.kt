@@ -685,8 +685,16 @@ class FarmAutomationService : Service() {
                 return@acceptCookiesIfPresent
             }
             if (builderInProgress && lower.contains("build.php") && !lower.contains("gid=16")) {
-                builderStage = "INSPECT_UPGRADE"
-                handler.postDelayed({ inspectUpgradeResources() }, 700)
+                if (builderStage == "TRANSFER_DONE") {
+                    builderStage = "INSPECT_UPGRADE"
+                    debugTrace("Resource Builder: kembali ke halaman resource setelah transfer -> inspectUpgradeResources()")
+                    handler.postDelayed({ inspectUpgradeResources() }, 700)
+                } else {
+                    builderStage = "OPEN_TRANSFER"
+                    pendingUpgradeUrl = automationWebView()?.url.orEmpty().ifBlank { "$server/build.php" }
+                    debugTrace("Resource Builder: masuk halaman resource -> clickRedResourceForTransfer()")
+                    handler.postDelayed({ clickRedResourceForTransfer() }, 700)
+                }
                 return@acceptCookiesIfPresent
             }
 
@@ -1601,11 +1609,20 @@ class FarmAutomationService : Service() {
     }
 
     private fun clickRedResourceForTransfer() {
-        // IMPORTANT: buka dialog transfer dengan mengklik DOM resource transfer yang
-        // benar-benar dirender Travian, bukan memanggil window.Travian.React.Hero
-        // secara langsung. Elemen target mempunyai class tepat:
-        //   inlineIcon resource transfer
-        // dan onclick-nya sendiri berisi openResourceTransfer(...).
+        debugTrace("ENTER clickRedResourceForTransfer()")
+
+        if (!running || !builderInProgress) {
+            debugTrace(
+                "HERO TRANSFER: batal — running=$running builderInProgress=$builderInProgress"
+            )
+            return
+        }
+
+        if (pendingUpgradeUrl.isBlank()) {
+            pendingUpgradeUrl = automationWebView()?.url.orEmpty()
+                .ifBlank { "$server/build.php" }
+        }
+
         val js = """
             (() => {
                 const visible = el => {
@@ -1615,20 +1632,30 @@ class FarmAutomationService : Service() {
                            r.width > 0 && r.height > 0;
                 };
 
-                // Prioritaskan class DOM yang diminta. Jangan fallback ke semua
-                // [onclick*=openResourceTransfer], karena bisa memilih elemen lain.
                 const candidates = [...document.querySelectorAll('.inlineIcon.resource.transfer')]
                     .filter(visible);
+
                 if (!candidates.length) {
-                    return JSON.stringify({ok:false, error:'DOM .inlineIcon.resource.transfer tidak ditemukan'});
+                    return JSON.stringify({
+                        ok:false,
+                        error:'DOM .inlineIcon.resource.transfer tidak ditemukan'
+                    });
                 }
 
-                // Pilih elemen yang mempunyai onclick openResourceTransfer.
                 const el = candidates.find(x =>
                     /openResourceTransfer/i.test(x.getAttribute('onclick') || '')
                 ) || candidates[0];
 
                 const onclick = el.getAttribute('onclick') || '';
+
+                if (!/openResourceTransfer/i.test(onclick)) {
+                    return JSON.stringify({
+                        ok:false,
+                        error:'onclick openResourceTransfer tidak ditemukan',
+                        count:candidates.length
+                    });
+                }
+
                 const getAmount = (name) => {
                     const re = new RegExp('\\b' + name + '\\s*:\\s*(\\d+)', 'i');
                     const m = onclick.match(re);
@@ -1643,13 +1670,11 @@ class FarmAutomationService : Service() {
                 };
 
                 el.scrollIntoView({block:'center', inline:'center'});
-
-                // Ini adalah aksi utama: klik elemen DOM Travian.
                 el.click();
 
                 return JSON.stringify({
                     ok:true,
-                    clickedClass: el.className,
+                    clickedClass: String(el.className || ''),
                     targetResourceAmount,
                     hasOpenResourceTransfer: /openResourceTransfer/i.test(onclick)
                 });
@@ -1657,25 +1682,59 @@ class FarmAutomationService : Service() {
         """.trimIndent()
 
         fun attempt(attempt: Int) {
-            webView?.evaluateJavascript(js) { result ->
-                val decoded = result?.trim()?.removePrefix("\"")?.removeSuffix("\"")?.replace("\\\"", "\"") ?: ""
-                if (decoded.contains("\"ok\":true")) {
-                    debugTrace("HERO TRANSFER: DOM .inlineIcon.resource.transfer diklik: $decoded")
-                    handler.postDelayed({ clickTransferSelected() }, 900L)
-                } else if (attempt < 8) {
-                    debugTrace("HERO TRANSFER: DOM .inlineIcon.resource.transfer belum siap (attempt $attempt/8): $decoded")
+            debugTrace("HERO TRANSFER: attempt $attempt/8")
+
+            val targetWebView = automationWebView()
+
+            if (targetWebView == null) {
+                debugTrace("HERO TRANSFER: automationWebView() == null")
+
+                if (attempt < 8) {
                     handler.postDelayed({ attempt(attempt + 1) }, 700L)
                 } else {
-                    logEvent("Resource Builder: tombol .inlineIcon.resource.transfer tidak ditemukan")
-                    pendingUpgradeUrl = ""
-                    pendingUpgradeCosts = longArrayOf(0L,0L,0L,0L)
-                    goToNextBuilderVillage()
+                    logEvent(
+                        "Resource Builder: WebView tidak tersedia; langsung mencoba upgrade"
+                    )
+                    clickResourceUpgrade()
+                }
+                return
+            }
+
+            targetWebView.evaluateJavascript(js) { result ->
+                val decoded = result?.trim()
+                    ?.removePrefix(""")
+                    ?.removeSuffix(""")
+                    ?.replace("\\"", """)
+                    ?: ""
+
+                debugTrace(
+                    "HERO TRANSFER: attempt $attempt/8 result=$decoded"
+                )
+
+                if (decoded.contains(""ok":true")) {
+                    debugTrace(
+                        "HERO TRANSFER: BERHASIL klik .inlineIcon.resource.transfer"
+                    )
+                    handler.postDelayed({ clickTransferSelected() }, 900L)
+                } else if (attempt < 8) {
+                    debugTrace(
+                        "HERO TRANSFER: resource transfer belum siap/gagal " +
+                        "(attempt $attempt/8)"
+                    )
+                    handler.postDelayed({ attempt(attempt + 1) }, 700L)
+                } else {
+                    logEvent(
+                        "Resource Builder: .inlineIcon.resource.transfer tidak ditemukan/gagal; langsung upgrade"
+                    )
+                    pendingUpgradeCosts = longArrayOf(0L, 0L, 0L, 0L)
+                    handler.postDelayed({ clickResourceUpgrade() }, 300L)
                 }
             }
         }
 
         attempt(1)
     }
+
 
     private fun clickTransferSelected() {
         debugTrace("ENTER clickTransferSelected")
@@ -1701,6 +1760,7 @@ class FarmAutomationService : Service() {
             val result = raw.orEmpty().trim('"').replace("\\\"", "\"")
             if (result == "clicked") {
                 logEvent("Resource Builder: Transfer selected diklik")
+                builderStage = "TRANSFER_DONE"
                 val url = pendingUpgradeUrl
                 handler.postDelayed({ automationWebView()?.loadUrl(url) }, 900L)
             } else if (inventoryUseAttempt < 8) {
