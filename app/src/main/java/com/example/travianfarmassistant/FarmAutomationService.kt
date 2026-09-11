@@ -1701,17 +1701,13 @@ class FarmAutomationService : Service() {
             }
 
             targetWebView.evaluateJavascript(js) { result ->
-                val decoded = result?.trim()
-                    ?.removePrefix(""")
-                    ?.removeSuffix(""")
-                    ?.replace("\\"", """)
-                    ?: ""
+                val decoded = result?.trim('"') ?: ""
 
                 debugTrace(
                     "HERO TRANSFER: attempt $attempt/8 result=$decoded"
                 )
 
-                if (decoded.contains(""ok":true")) {
+                if (decoded.contains('"ok":true')) {
                     debugTrace(
                         "HERO TRANSFER: BERHASIL klik .inlineIcon.resource.transfer"
                     )
