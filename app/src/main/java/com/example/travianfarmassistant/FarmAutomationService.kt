@@ -1601,12 +1601,32 @@ class FarmAutomationService : Service() {
     }
 
     private fun clickRedResourceForTransfer() {
+        // IMPORTANT: buka dialog transfer dengan mengklik DOM resource transfer yang
+        // benar-benar dirender Travian, bukan memanggil window.Travian.React.Hero
+        // secara langsung. Elemen target mempunyai class tepat:
+        //   inlineIcon resource transfer
+        // dan onclick-nya sendiri berisi openResourceTransfer(...).
         val js = """
             (() => {
-                const el = document.querySelector(
-                    '.inlineIcon.resource.transfer[onclick*="openResourceTransfer"], [onclick*="openResourceTransfer"]'
-                );
-                if (!el) return JSON.stringify({ok:false, error:'openResourceTransfer element tidak ditemukan'});
+                const visible = el => {
+                    if (!el) return false;
+                    const s = getComputedStyle(el), r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden' &&
+                           r.width > 0 && r.height > 0;
+                };
+
+                // Prioritaskan class DOM yang diminta. Jangan fallback ke semua
+                // [onclick*=openResourceTransfer], karena bisa memilih elemen lain.
+                const candidates = [...document.querySelectorAll('.inlineIcon.resource.transfer')]
+                    .filter(visible);
+                if (!candidates.length) {
+                    return JSON.stringify({ok:false, error:'DOM .inlineIcon.resource.transfer tidak ditemukan'});
+                }
+
+                // Pilih elemen yang mempunyai onclick openResourceTransfer.
+                const el = candidates.find(x =>
+                    /openResourceTransfer/i.test(x.getAttribute('onclick') || '')
+                ) || candidates[0];
 
                 const onclick = el.getAttribute('onclick') || '';
                 const getAmount = (name) => {
@@ -1622,23 +1642,17 @@ class FarmAutomationService : Service() {
                     crop: getAmount('crop')
                 };
 
-                const valid = Object.values(targetResourceAmount).some(v => v > 0);
-                const hero = window.Travian && window.Travian.React && window.Travian.React.Hero;
-                if (!hero || typeof hero.openResourceTransfer !== 'function') {
-                    return JSON.stringify({ok:false, error:'Travian.React.Hero.openResourceTransfer tidak tersedia'});
-                }
-                if (!valid) {
-                    return JSON.stringify({ok:false, error:'targetResourceAmount tidak berhasil dibaca dari DOM', onclick});
-                }
+                el.scrollIntoView({block:'center', inline:'center'});
 
-                hero.openResourceTransfer({
+                // Ini adalah aksi utama: klik elemen DOM Travian.
+                el.click();
+
+                return JSON.stringify({
+                    ok:true,
+                    clickedClass: el.className,
                     targetResourceAmount,
-                    onTransferFinish: window.Travian && window.Travian.Autoreload
-                        ? window.Travian.Autoreload.autoreload
-                        : undefined
+                    hasOpenResourceTransfer: /openResourceTransfer/i.test(onclick)
                 });
-
-                return JSON.stringify({ok:true, targetResourceAmount});
             })()
         """.trimIndent()
 
@@ -1646,13 +1660,16 @@ class FarmAutomationService : Service() {
             webView?.evaluateJavascript(js) { result ->
                 val decoded = result?.trim()?.removePrefix("\"")?.removeSuffix("\"")?.replace("\\\"", "\"") ?: ""
                 if (decoded.contains("\"ok\":true")) {
-                    debugTrace("HERO TRANSFER: openResourceTransfer dipanggil dengan targetResourceAmount dari DOM: $decoded")
-                    handler.postDelayed({ clickTransferSelected() }, 800L)
+                    debugTrace("HERO TRANSFER: DOM .inlineIcon.resource.transfer diklik: $decoded")
+                    handler.postDelayed({ clickTransferSelected() }, 900L)
                 } else if (attempt < 8) {
-                    debugTrace("HERO TRANSFER: DOM belum siap (attempt $attempt/8): $decoded")
+                    debugTrace("HERO TRANSFER: DOM .inlineIcon.resource.transfer belum siap (attempt $attempt/8): $decoded")
                     handler.postDelayed({ attempt(attempt + 1) }, 700L)
                 } else {
-                    debugTrace("HERO TRANSFER: gagal membaca/memanggil openResourceTransfer dari DOM: $decoded")
+                    logEvent("Resource Builder: tombol .inlineIcon.resource.transfer tidak ditemukan")
+                    pendingUpgradeUrl = ""
+                    pendingUpgradeCosts = longArrayOf(0L,0L,0L,0L)
+                    goToNextBuilderVillage()
                 }
             }
         }
