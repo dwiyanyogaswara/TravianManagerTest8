@@ -1677,7 +1677,10 @@ class FarmAutomationService : Service() {
                     return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
                 };
                 const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
-                const root = document.querySelector('#build, #villageContent, #content') || document.body;
+
+                // Cari elemen upgrade di seluruh document. Pada beberapa layout
+                // Travian tombol upgrade berada di luar #build/#villageContent.
+                const root = document;
                 const current = [
                     '#l1', '#l2', '#l3', '#l4'
                 ].map(sel => {
@@ -1724,24 +1727,36 @@ class FarmAutomationService : Service() {
                     }
                 }
 
-                const all = [...root.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')];
+                const all = [...document.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')];
                 const candidates = all.filter(el => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
                 const textOf = el => norm(el.innerText || el.textContent || el.value || el.title || el.getAttribute('aria-label'));
 
-                // PENTING: bila tombol upgrade normal sedang ENABLED, jangan pernah
-                // membuka Hero. Travian sendiri sudah menyatakan resource cukup.
-                // Prioritaskan tombol "Upgrade to level X" dan abaikan tombol
-                // Speed-up/Gold seperti "Upgrade 25% faster" atau "Construct with master builder".
+                // Bila tombol Upgrade normal ENABLED, resource sudah cukup.
+                // Jangan membuka popup Hero dalam kondisi ini.
                 const normalUpgrade = candidates.find(el => {
                     const text = textOf(el);
                     const cls = (el.className || '').toString().toLowerCase();
-                    const href = (el.getAttribute('href') || '').toLowerCase();
                     if (/cancel|demolish|destroy|remove|faster|master builder|gold/.test(text + ' ' + cls)) return false;
                     return /\bupgrade\s+to\s+level\s+\d+\b/i.test(text);
                 });
 
-                if (normalUpgrade) {
-                    return JSON.stringify({state:'ready_button', current, costs, deficit:[0,0,0,0], buttonText:textOf(normalUpgrade).slice(0,120)});
+                const greenUpgrade = !normalUpgrade ? candidates.find(el => {
+                    const text = textOf(el);
+                    const cls = (el.className || '').toString().toLowerCase();
+                    if (/cancel|demolish|destroy|remove|faster|master builder|gold/.test(text + ' ' + cls)) return false;
+                    return /\bupgrade\b/i.test(text) && /green|textbuttonv1/.test(cls);
+                }) : null;
+
+                const readyUpgrade = normalUpgrade || greenUpgrade;
+                if (readyUpgrade) {
+                    return JSON.stringify({
+                        state:'ready_button',
+                        current,
+                        costs,
+                        deficit:[0,0,0,0],
+                        buttonText:textOf(readyUpgrade).slice(0,120),
+                        buttonClass:String(readyUpgrade.className || '').slice(0,160)
+                    });
                 }
 
                 // Fallback untuk markup yang tidak memakai teks "Upgrade to level X".
@@ -2286,21 +2301,28 @@ private fun clickTransferSelected() {
                     return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
                 };
                 const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
-                const root = document.querySelector('#build, #villageContent') || document.body;
-                const all = [...root.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')];
+                const all = [...document.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button]')];
                 const candidates = all.filter(el => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
-                const btn = candidates.find(el => {
-                    const text = norm(el.innerText || el.textContent || el.value || el.title || el.getAttribute('aria-label'));
+                const textOf = el => norm(el.innerText || el.textContent || el.value || el.title || el.getAttribute('aria-label') || '');
+
+                // Prioritas MUTLAK: tombol upgrade resource normal.
+                // Hindari tombol speed-up/master builder/Gold.
+                let btn = candidates.find(el => {
+                    const text = textOf(el);
                     const cls = (el.className || '').toString().toLowerCase();
-                    const href = (el.getAttribute('href') || '').toLowerCase();
-                    if (/cancel|demolish|destroy|remove/.test(text + ' ' + cls)) return false;
-                    return /upgrade|upgrade to level|build/.test(text) ||
-                           /(?:^|\s)(green|build|upgrade)(?:\s|$)/.test(cls) ||
-                           /build\.php/.test(href);
-                }) || candidates.find(el => {
-                    const cls = (el.className || '').toString().toLowerCase();
-                    return /green/.test(cls) && /build|upgrade/.test(cls);
+                    if (/faster|master builder|gold|cancel|demolish|destroy|remove/.test(text + ' ' + cls)) return false;
+                    return /\bupgrade\s+to\s+level\s+\d+\b/i.test(text);
                 });
+
+                if (!btn) {
+                    btn = candidates.find(el => {
+                        const text = textOf(el);
+                        const cls = (el.className || '').toString().toLowerCase();
+                        if (/faster|master builder|gold|cancel|demolish|destroy|remove/.test(text + ' ' + cls)) return false;
+                        return /\bupgrade\b/i.test(text) && /green|textbuttonv1/.test(cls);
+                    });
+                }
+
                 if (!btn) return 'not-found';
                 btn.scrollIntoView({block:'center'});
                 const href = btn.getAttribute('href') || '';
