@@ -121,6 +121,8 @@ class FarmAutomationService : Service() {
         val id: String,
         val linkVillage: String,
         val linkResource: String,
+        val resourceId: String,
+        val resourceGid: String,
         val minLvl: Int
     )
 
@@ -142,6 +144,8 @@ class FarmAutomationService : Service() {
                     id = id,
                     linkVillage = item.optString("LinkVillage").trim(),
                     linkResource = item.optString("LinkResource").trim(),
+                    resourceId = item.optString("ResourceId").trim(),
+                    resourceGid = item.optString("ResourceGid").trim(),
                     minLvl = item.optInt("MinLvl", -1)
                 )
             )
@@ -1202,6 +1206,15 @@ class FarmAutomationService : Service() {
         automationWebView()?.loadUrl("$server/dorf1.php?newdid=$id")
     }
 
+    /**
+     * Refresh otomatis harus memakai aturan identifikasi field yang sama dengan
+     * REFRESH VILLAGE setelah login di MainActivity:
+     * - ID, GID dan level harus berasal dari field yang sama.
+     * - Tidak boleh default gid=1.
+     * - Target resource disimpan lengkap (LinkResource, ResourceId, ResourceGid, MinLvl).
+     * Dengan begitu refresh otomatis tidak menghasilkan database yang berbeda
+     * dengan refresh manual/setelah login.
+     */
     private fun inspectAutomaticVillageRefresh() {
         if (!running || !villageRefreshInProgress || villageRefreshInspectInFlight) return
         val pair = villageRefreshVillages.getOrNull(villageRefreshIndex) ?: return
@@ -1209,55 +1222,204 @@ class FarmAutomationService : Service() {
         val expectedId = pair.first
         val expectedName = pair.second
         val idJson = JSONObject.quote(expectedId)
+
         val js = """
             (() => {
                 const expectedId = $idJson;
                 const clean = s => String(s || '').replace(/\s+/g,' ').trim();
-                const urlId = location.href.match(/[?&]newdid=(\d+)/i)?.[1] || '';
-                const active = document.querySelector('#sidebarBoxVillagelist .listEntry.active, #sidebarBoxVillagelist .listEntry.selected, .villageList .listEntry.active, .villageList .listEntry.selected, [data-did].active');
+                const url = location.href;
+                const match = url.match(/[?&]newdid=(\d+)/i);
+                let currentId = match ? match[1] : '';
+
+                const activeCandidates = [
+                    '#sidebarBoxVillagelist .listEntry.active',
+                    '#sidebarBoxVillagelist .listEntry.selected',
+                    '.villageList .listEntry.active',
+                    '.villageList .listEntry.selected',
+                    '[data-did].active'
+                ];
+                let active = null;
+                for (const selector of activeCandidates) {
+                    try { active = document.querySelector(selector); if (active) break; } catch (_) {}
+                }
                 const activeId = active?.getAttribute('data-did') || '';
-                const currentId = /^\d+$/.test(urlId) ? urlId : activeId;
-                if (currentId !== expectedId) return JSON.stringify({ready:false, reason:'WRONG_VILLAGE', currentId, expectedId});
+                const activeName = clean(active?.querySelector('.name')?.textContent || '');
+                if (!currentId && /^\d+$/.test(activeId)) currentId = activeId;
+
+                if (currentId !== expectedId) {
+                    return JSON.stringify({
+                        ready:false, reason:'WRONG_VILLAGE', id:currentId, expectedId,
+                        url, activeId, activeName, readyState:document.readyState
+                    });
+                }
+
                 const container = document.querySelector('#resourceFieldContainer');
-                if (!container) return JSON.stringify({ready:false, reason:'NO_RESOURCE_CONTAINER'});
-                const anchors = [...container.querySelectorAll('a[href*="build.php?id="]')];
+                if (!container) {
+                    return JSON.stringify({
+                        ready:false, reason:'NO_RESOURCE_CONTAINER', id:currentId, expectedId,
+                        url, activeId, activeName, readyState:document.readyState
+                    });
+                }
+
+                const attr = (el, names) => {
+                    for (const name of names) {
+                        const value = el?.getAttribute?.(name);
+                        if (value != null && String(value).trim() !== '') return String(value).trim();
+                    }
+                    return '';
+                };
+
+                const numberFrom = (value, patterns) => {
+                    const text = String(value || '');
+                    for (const pattern of patterns) {
+                        const m = text.match(pattern);
+                        if (m) return parseInt(m[1], 10);
+                    }
+                    return -1;
+                };
+
+                const readFieldValue = (anchor, names, patterns, maxDepth = 10) => {
+                    let node = anchor;
+                    for (let depth = 0; depth < maxDepth && node; depth++, node = node.parentElement) {
+                        const className = typeof node.className === 'string' ? node.className : '';
+                        const values = [
+                            ...names.map(name => node.getAttribute?.(name) || ''),
+                            node.getAttribute?.('title') || '',
+                            node.getAttribute?.('aria-label') || '',
+                            className
+                        ];
+                        const value = numberFrom(values.join(' '), patterns);
+                        if (value >= 0) return value;
+                    }
+                    return -1;
+                };
+
+                const fieldAnchors = [
+                    ...container.querySelectorAll(
+                        'a[href*="build.php?id="], a[data-id], a[id], .buildingSlot a, .resourceField a'
+                    )
+                ];
+
                 const candidates = [];
                 const seen = new Set();
-                for (const a of anchors) {
+
+                for (const a of fieldAnchors) {
                     const hrefRaw = a.getAttribute('href') || '';
-                    const m = hrefRaw.match(/[?&]id=(\d+)/i);
-                    if (!m || seen.has(m[1])) continue;
-                    const fieldId = parseInt(m[1],10);
-                    if (!Number.isFinite(fieldId) || fieldId < 1 || fieldId > 18) continue;
-                    seen.add(m[1]);
-                    let level=-1, node=a;
-                    for (let depth=0; depth<10 && node; depth++, node=node.parentElement) {
-                        const text=clean(node.innerText||node.textContent||'');
-                        const attrs=[node.getAttribute?.('data-level')||'',node.getAttribute?.('title')||'',node.getAttribute?.('aria-label')||'',String(node.className||'')].join(' ');
-                        const lm=text.match(/(?:level|lvl)\s*(\d+)/i)||attrs.match(/level\s*(\d+)/i)||String(node.className||'').match(/level(\d+)\b/i);
-                        if(lm){level=parseInt(lm[1],10);break;}
+                    const absoluteHref = (() => {
+                        try { return new URL(hrefRaw, location.href); } catch (_) { return null; }
+                    })();
+
+                    let fieldId = absoluteHref?.searchParams.get('id')
+                        ? parseInt(absoluteHref.searchParams.get('id'), 10) : -1;
+                    if (!(fieldId >= 1 && fieldId <= 18)) {
+                        fieldId = readFieldValue(
+                            a,
+                            ['data-id', 'data-field-id', 'data-fieldid'],
+                            [
+                                /(?:^|[\s_-])id\s*([0-9]{1,2})(?=$|[\s_-])/i,
+                                /(?:^|[\s_-])field(?:id)?\s*([0-9]{1,2})(?=$|[\s_-])/i
+                            ]
+                        );
                     }
-                    const disabled=a.classList.contains('disabled')||!!a.closest('.disabled')||a.getAttribute('aria-disabled')==='true'||a.getAttribute('data-disabled')==='true';
-                    const absoluteHref=new URL(hrefRaw, location.href);
-                    absoluteHref.searchParams.set('gid','1');
-                    candidates.push({fieldId,level,href:absoluteHref.href,disabled});
+                    if (!(fieldId >= 1 && fieldId <= 18) || seen.has(fieldId)) continue;
+
+                    // GID wajib diambil dari field yang sama; jangan default gid=1.
+                    let gid = absoluteHref?.searchParams.get('gid')
+                        ? parseInt(absoluteHref.searchParams.get('gid'), 10) : -1;
+                    if (!(gid >= 1 && gid <= 4)) {
+                        gid = readFieldValue(
+                            a,
+                            ['data-gid', 'data-building-gid', 'data-buildingid', 'data-building-id'],
+                            [
+                                /(?:^|[\s_-])gid\s*([1-4])(?=$|[\s_-])/i,
+                                /(?:^|[\s_-])building(?:id|gid)?\s*([1-4])(?=$|[\s_-])/i
+                            ]
+                        );
+                    }
+                    if (!(gid >= 1 && gid <= 4)) continue;
+
+                    const level = readFieldValue(
+                        a,
+                        ['data-level', 'data-lvl', 'data-field-level'],
+                        [
+                            /(?:^|[\s_-])(?:a)?level\s*([0-9]{1,2})(?=$|[\s_-])/i,
+                            /(?:^|[\s_-])lvl\s*([0-9]{1,2})(?=$|[\s_-])/i,
+                            /(?:^|[\s_-])level([0-9]{1,2})(?=$|[\s_-])/i,
+                            /(?:^|[\s_-])lvl([0-9]{1,2})(?=$|[\s_-])/i
+                        ]
+                    );
+                    if (!(level >= 0)) continue;
+
+                    const disabled = a.classList.contains('disabled') ||
+                        !!a.closest('.disabled') ||
+                        a.getAttribute('aria-disabled') === 'true' ||
+                        a.getAttribute('data-disabled') === 'true';
+
+                    if (absoluteHref) {
+                        absoluteHref.searchParams.set('gid', String(gid));
+                        absoluteHref.searchParams.set('newdid', expectedId);
+                    }
+
+                    seen.add(fieldId);
+                    candidates.push({
+                        fieldId, gid, level,
+                        href: absoluteHref?.href || hrefRaw,
+                        disabled
+                    });
                 }
-                candidates.sort((a,b)=>(a.level>=0?a.level:999)-(b.level>=0?b.level:999)||a.fieldId-b.fieldId);
-                const lowest = candidates.find(x => !x.disabled && x.level >= 0 && x.level < 10) || null;
-                const levels = candidates.filter(x => x.level >= 0).map(x => x.level);
-                const name = clean(active?.querySelector('.name')?.textContent || '') || 'Village ' + expectedId;
-                return JSON.stringify({ready:candidates.length >= 18, currentId, name, fieldCount:candidates.length, minLevel:lowest?.level ?? (levels.length ? Math.min(...levels) : -1), lowest});
+
+                candidates.sort((a,b) =>
+                    a.level - b.level || a.fieldId - b.fieldId
+                );
+
+                const lowest = candidates.find(
+                    x => !x.disabled && x.level >= 0 && x.gid >= 1 && x.gid <= 4 && x.level < 10
+                ) || null;
+
+                // Samakan syarat readiness dengan refresh setelah login:
+                // minimal 18 field harus lengkap sebagai pasangan ID+GID+level.
+                const resourceFieldsComplete = candidates.length >= 18;
+                if (!resourceFieldsComplete) {
+                    return JSON.stringify({
+                        ready:false, reason:'FIELDS_NOT_READY',
+                        id:currentId, expectedId, url, activeId, activeName,
+                        fieldCount:candidates.length
+                    });
+                }
+
+                const entry = [...document.querySelectorAll('[data-did]')]
+                    .find(e => String(e.getAttribute('data-did') || '') === expectedId);
+                const name = clean(
+                    entry?.querySelector('.name')?.textContent ||
+                    entry?.querySelector('[class*="name"]')?.textContent ||
+                    activeName || expectedName || ''
+                );
+
+                return JSON.stringify({
+                    ready:true,
+                    id:expectedId,
+                    name,
+                    minLevel:lowest?.level ?? Math.min(...candidates.map(x => x.level)),
+                    lowest
+                });
             })();
         """.trimIndent()
+
         automationWebView()?.evaluateJavascript(js) { raw ->
-            val result = raw.orEmpty().trim('"').replace("\\\"", "\"")
+            val result = raw.orEmpty().trim().trim('"').replace("\\\"", "\"")
             val json = runCatching { JSONObject(result) }.getOrNull()
             villageRefreshInspectInFlight = false
+
             if (json?.optBoolean("ready", false) != true) {
                 villageRefreshRetry++
                 val reason = json?.optString("reason", "NOT_READY") ?: "NOT_READY"
                 if (villageRefreshRetry <= 12) {
-                    if (villageRefreshRetry == 1 || villageRefreshRetry == 8) logEvent("AUTO REFRESH VILLAGE: $expectedName belum siap reason=$reason retry=$villageRefreshRetry")
+                    if (villageRefreshRetry == 1 || villageRefreshRetry == 8) {
+                        logEvent(
+                            "AUTO REFRESH VILLAGE: $expectedName belum siap " +
+                                "reason=$reason retry=$villageRefreshRetry"
+                        )
+                    }
                     handler.postDelayed({ inspectAutomaticVillageRefresh() }, 800L)
                 } else {
                     logEvent("AUTO REFRESH VILLAGE: $expectedName timeout; village dilewati")
@@ -1266,30 +1428,55 @@ class FarmAutomationService : Service() {
                 }
                 return@evaluateJavascript
             }
+
             val lowest = json.optJSONObject("lowest")
             val href = lowest?.optString("href").orEmpty().trim()
-            val minLevel = lowest?.optInt("level", json.optInt("minLevel", -1)) ?: json.optInt("minLevel", -1)
+            val resourceId = lowest?.optInt("fieldId", -1) ?: -1
+            val resourceGid = lowest?.optInt("gid", -1) ?: -1
+            val minLevel = lowest?.optInt("level", json.optInt("minLevel", -1))
+                ?: json.optInt("minLevel", -1)
+
             val records = loadVillageDataRecordsFromPrefs().toMutableList()
             val pos = records.indexOfFirst { it.id == expectedId }
+
             if (minLevel >= 10) {
                 if (pos >= 0) {
                     records.removeAt(pos)
                     saveVillageDataRecordsForService(records)
                 }
-                logEvent("AUTO REFRESH VILLAGE: $expectedName dihapus dari DATABASE — MinLvl=L$minLevel (>=10)")
-            } else if (pos >= 0 && href.isNotBlank() && minLevel >= 0) {
+                logEvent(
+                    "AUTO REFRESH VILLAGE: $expectedName dihapus dari DATABASE — " +
+                        "MinLvl=L$minLevel (>=10)"
+                )
+            } else if (
+                pos >= 0 &&
+                href.isNotBlank() &&
+                resourceId in 1..18 &&
+                resourceGid in 1..4 &&
+                minLevel >= 0
+            ) {
                 val old = records[pos]
                 records[pos] = old.copy(
                     namaVillage = json.optString("name").trim().ifBlank { expectedName },
                     linkVillage = "$server/dorf1.php?newdid=$expectedId",
                     linkResource = href,
+                    resourceId = resourceId.toString(),
+                    resourceGid = resourceGid.toString(),
                     minLvl = minLevel
                 )
                 saveVillageDataRecordsForService(records)
-                logEvent("AUTO REFRESH VILLAGE: $expectedName updated — min=L$minLevel id=${lowest?.optString("fieldId").orEmpty()} target=$href")
+
+                logEvent(
+                    "AUTO REFRESH VILLAGE: $expectedName updated — " +
+                        "min=L$minLevel id=$resourceId gid=$resourceGid target=$href"
+                )
             } else {
-                logEvent("AUTO REFRESH VILLAGE: $expectedName target tidak valid — min=L$minLevel id=${lowest?.optString("fieldId").orEmpty()}")
+                logEvent(
+                    "AUTO REFRESH VILLAGE: $expectedName target tidak valid — " +
+                        "min=L$minLevel id=$resourceId gid=$resourceGid"
+                )
             }
+
             villageRefreshIndex++
             handler.postDelayed({ loadNextAutomaticVillageRefresh() }, 500L)
         }
@@ -1304,6 +1491,8 @@ class FarmAutomationService : Service() {
                 put("Id", item.id)
                 put("LinkVillage", item.linkVillage)
                 put("LinkResource", item.linkResource)
+                put("ResourceId", item.resourceId)
+                put("ResourceGid", item.resourceGid)
                 put("MinLvl", item.minLvl)
             })
         }
