@@ -484,6 +484,26 @@ class FarmAutomationService : Service() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun startAutomation() {
         debugTrace("ENTER startAutomation")
+
+        // Jika tombol Bot diaktifkan kembali saat service/siklus lama masih aktif,
+        // hentikan callback siklus lama terlebih dahulu agar tidak terjadi double cycle.
+        if (running) {
+            logEvent("Bot diaktifkan kembali — menghentikan callback siklus lama sebelum memulai siklus baru")
+            handler.removeCallbacksAndMessages(null)
+            builderInProgress = false
+            pendingStartAll = false
+            countdownCyclePending = false
+            villageRefreshInProgress = false
+            villageRefreshCompleted = false
+            villageRefreshClosed = true
+            farmListCycleComplete = false
+            pendingBuilderResourceHref = ""
+            builderVillageClickInProgress = false
+            pendingUpgradeUrl = ""
+            pendingUpgradeCosts = longArrayOf(0L, 0L, 0L, 0L)
+            heroTransferCompleted = false
+        }
+
         running = true
         cycleNumber = 0
         pendingStartAll = false
@@ -1661,9 +1681,26 @@ class FarmAutomationService : Service() {
 
         builderStage = "INSPECT_UPGRADE"
 
+        // Beri waktu 3 detik agar seluruh DOM/komponen halaman resource selesai dirender
+        // sebelum menentukan jalur direct upgrade atau Hero Transfer.
+        logEvent("Resource Builder: menunggu 3 detik agar DOM halaman resource selesai dimuat")
+        handler.postDelayed({
+            if (!running || !builderInProgress) return@postDelayed
+            if (automationWebView()?.url.orEmpty().contains("gid=16", ignoreCase = true)) {
+                logEvent("Resource Builder: halaman berubah ke Farm List; pemeriksaan Upgrade dibatalkan")
+                return@postDelayed
+            }
+            inspectUpgradeResourcesAfterDomReady()
+        }, 3_000L)
+    }
+
+    private fun inspectUpgradeResourcesAfterDomReady(): Unit {
+        debugTrace("ENTER inspectUpgradeResourcesAfterDomReady")
+        if (!running || !builderInProgress) return
+
         // ALUR UTAMA YANG DIMINTA:
-        // Setelah masuk halaman resource, cukup cek apakah ada BUTTON dengan
-        // tulisan yang mengandung "Upgrade to level".
+        // Setelah DOM siap, cukup cek SELURUH TEKS HALAMAN.
+        // Tidak peduli "Upgrade to level" berada di button, div, link, atau elemen lain.
         //
         // ADA    -> langsung klik Upgrade.
         // TIDAK ADA -> jalur Hero lama yang sudah terbukti berhasil:
@@ -1675,37 +1712,15 @@ class FarmAutomationService : Service() {
         // tombol Upgrade to level.
         val js = """
             (() => {
-                const visible = el => {
-                    if (!el) return false;
-                    const s = getComputedStyle(el), r = el.getBoundingClientRect();
-                    return s.display !== 'none' && s.visibility !== 'hidden' &&
-                           s.opacity !== '0' && r.width > 0 && r.height > 0;
-                };
-                const norm = s => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-
-                const buttons = [...document.querySelectorAll('button')]
-                    .filter(visible)
-                    .filter(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true');
-
-                const upgradeButton = buttons.find(el =>
-                    /upgrade\\s+to\\s+level/i.test(
-                        el.innerText || el.textContent || el.value || el.title ||
-                        el.getAttribute('aria-label') || ''
-                    )
-                );
-
-                if (upgradeButton) {
-                    return JSON.stringify({
-                        state: 'upgrade_available',
-                        text: norm(upgradeButton.innerText || upgradeButton.textContent || upgradeButton.value || '').slice(0, 200),
-                        tag: upgradeButton.tagName,
-                        id: upgradeButton.id || '',
-                        className: String(upgradeButton.className || '').slice(0, 200)
-                    });
-                }
+                const pageText = String(document.body?.innerText || document.documentElement?.innerText || '');
+                const normalizedText = pageText.replace(/\s+/g, ' ').trim();
+                const hasUpgradeText = /upgrade\s+to\s+level/i.test(normalizedText);
 
                 return JSON.stringify({
-                    state: 'hero_required'
+                    state: hasUpgradeText ? 'upgrade_available' : 'hero_required',
+                    hasUpgradeText: hasUpgradeText,
+                    matchedText: hasUpgradeText ? (normalizedText.match(/upgrade\s+to\s+level[^\n]*/i)?.[0] || 'Upgrade to level') : '',
+                    pageTextLength: normalizedText.length
                 });
             })();
         """.trimIndent()
@@ -1714,12 +1729,12 @@ class FarmAutomationService : Service() {
             val result = raw.orEmpty().trim('"').replace("\\\"", "\"")
 
             if (result.contains("\"state\":\"upgrade_available\"")) {
-                logEvent("Resource Builder: ditemukan button 'Upgrade to level' — langsung klik Upgrade")
+                logEvent("Resource Builder: halaman mengandung teks 'Upgrade to level' — langsung klik Upgrade")
                 heroTransferCompleted = false
                 pendingUpgradeCosts = longArrayOf(0L, 0L, 0L, 0L)
                 clickResourceUpgrade()
             } else {
-                logEvent("Resource Builder: button 'Upgrade to level' tidak ditemukan — masuk jalur Hero Transfer")
+                logEvent("Resource Builder: halaman tidak mengandung teks 'Upgrade to level' — masuk jalur Hero Transfer")
                 pendingUpgradeCosts = longArrayOf(0L, 0L, 0L, 0L)
                 pendingUpgradeUrl = automationWebView()?.url.orEmpty().ifBlank { "$server/build.php" }
                 inventoryUseAttempt = 0
@@ -2675,7 +2690,12 @@ private fun clickTransferSelected() {
     private fun stopAutomation() {
         debugTrace("ENTER stopAutomation")
         persistActiveCycleDuration()
+        // Nonaktifkan bot = hentikan siklus yang sedang berjalan dan seluruh callback tertunda.
         running = false
+        builderInProgress = false
+        farmListCycleComplete = false
+        countdownCyclePending = false
+        pendingStartAll = false
         handler.removeCallbacks(cycleWatchdogRunnable)
         handler.removeCallbacks(delayedVillageRefreshRunnable)
         villageRefreshInProgress = false
