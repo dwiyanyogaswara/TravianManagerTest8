@@ -1921,142 +1921,85 @@ class FarmAutomationService : Service() {
     }
 
 private fun clickTransferSelected() {
-        debugTrace("ENTER clickTransferSelected")
-        if (!running || !builderInProgress || pendingUpgradeUrl.isBlank()) return
+    debugTrace("ENTER clickTransferSelected")
+    if (!running || !builderInProgress || pendingUpgradeUrl.isBlank()) return
 
-        val js = """
-            (() => {
-                const visible = el => {
-                    if (!el) return false;
-                    const s = getComputedStyle(el), r = el.getBoundingClientRect();
-                    return s.display !== 'none' && s.visibility !== 'hidden' &&
-                           r.width > 0 && r.height > 0;
-                };
+    val js = """
+        (() => {
+            const norm = s => String(s || '').replace(/[\u200B-\u200D\uFEFF]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+            const visible = el => {
+                if (!el) return false;
+                const s = getComputedStyle(el), r = el.getBoundingClientRect();
+                return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0' && r.width > 0 && r.height > 0;
+            };
 
-                const norm = s => String(s || '')
-                    .replace(/\\s+/g, ' ')
-                    .trim()
-                    .toLowerCase();
+            // Cari berdasarkan TULISAN "selected" saja.
+            // Tidak bergantung pada class/id HTML Travian yang dapat berubah.
+            const candidates = [...document.querySelectorAll('body *')].filter(visible);
+            const textEl = candidates.find(el => norm(el.innerText || el.textContent).includes('selected'));
+            if (!textEl) return JSON.stringify({ok:false, reason:'selected-not-found'});
 
-                const disabled = el => {
-                    if (!el) return true;
-                    return !!el.disabled ||
-                           el.getAttribute('aria-disabled') === 'true' ||
-                           el.classList.contains('disabled');
-                };
+            // Jika tulisan berada di dalam span/div kecil, naik ke elemen yang benar-benar dapat diklik.
+            let target = textEl;
+            while (target && target !== document.body) {
+                const tag = (target.tagName || '').toLowerCase();
+                const role = norm(target.getAttribute && target.getAttribute('role'));
+                const cls = norm(target.className);
+                const type = norm(target.getAttribute && target.getAttribute('type'));
+                const clickable = tag === 'button' || tag === 'a' || role === 'button' ||
+                                  (tag === 'input' && (type === 'button' || type === 'submit')) ||
+                                  target.onclick != null || cls.includes('button') || cls.includes('green');
+                if (clickable) break;
+                target = target.parentElement;
+            }
 
-                // PENTING: jangan mencari div lebih dahulu.
-                // Banyak dialog Travian mempunyai div pembungkus yang innerText-nya
-                // ikut berisi "Transfer selected", tetapi div tersebut bukan tombol.
-                const controls = [...document.querySelectorAll(
-                    'button, input[type="submit"], input[type="button"], a, [role="button"]'
-                )].filter(el => visible(el) && !disabled(el));
+            if (!target || target === document.body) target = textEl;
+            if (!visible(target)) return JSON.stringify({ok:false, reason:'target-not-visible'});
 
-                const score = el => {
-                    const text = norm(
-                        el.innerText || el.textContent || el.value ||
-                        el.getAttribute('aria-label') || el.title || ''
-                    );
-                    const cls = norm(el.className || '');
-                    let score = 0;
+            target.scrollIntoView({block:'center', inline:'center'});
 
-                    if (/^transfer\\s+selected$/.test(text)) score += 100;
-                    else if (/transfer\\s+selected/.test(text)) score += 80;
-                    else if (/transfer/.test(text) && /selected/.test(text)) score += 50;
+            const info = {
+                ok:true,
+                text:norm(target.innerText || target.textContent || target.value),
+                tag:target.tagName,
+                id:target.id || '',
+                className:typeof target.className === 'string' ? target.className : ''
+            };
 
-                    // Tombol Travian biasanya mempunyai class green / button.
-                    if (/green|button|btn/.test(cls)) score += 10;
-                    if (el.tagName === 'BUTTON' || el.tagName === 'INPUT') score += 10;
-                    if (el.tagName === 'A') score += 5;
-                    return score;
-                };
-
-                const ranked = controls
-                    .map(el => ({el, score: score(el)}))
-                    .filter(x => x.score > 0)
-                    .sort((a,b) => b.score - a.score);
-
-                const btn = ranked.length ? ranked[0].el : null;
-
-                if (!btn) {
-                    // Debug agar log menunjukkan apa yang sebenarnya muncul di dialog.
-                    const visibleTexts = controls.slice(0, 30).map(el => ({
-                        tag: el.tagName,
-                        text: norm(el.innerText || el.textContent || el.value || ''),
-                        cls: String(el.className || '')
+            // Gunakan click() asli terlebih dahulu, kemudian event mouse sebagai fallback.
+            try { if (typeof target.click === 'function') target.click(); } catch(e) {}
+            try {
+                ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(type => {
+                    target.dispatchEvent(new MouseEvent(type, {
+                        bubbles:true, cancelable:true, view:window, buttons:1
                     }));
-                    return JSON.stringify({
-                        result: 'not-found',
-                        controls: visibleTexts
-                    });
-                }
-
-                const text = norm(
-                    btn.innerText || btn.textContent || btn.value ||
-                    btn.getAttribute('aria-label') || btn.title || ''
-                );
-                const tag = btn.tagName;
-                const cls = String(btn.className || '');
-
-                btn.scrollIntoView({block:'center', inline:'center'});
-
-                // Gunakan native HTMLElement.click() terlebih dahulu.
-                // Ini lebih tepat untuk React daripada dispatch MouseEvent pada
-                // parent div yang hanya kebetulan mempunyai innerText yang sama.
-                btn.click();
-
-                return JSON.stringify({
-                    result: 'clicked',
-                    tag,
-                    text,
-                    cls
                 });
-            })();
-        """.trimIndent()
+            } catch(e) {}
 
-        fun attempt(attempt: Int) {
-            debugTrace("TRANSFER SELECTED: attempt $attempt/15")
+            return JSON.stringify(info);
+        })();
+    """.trimIndent()
 
-            val targetWebView = automationWebView()
-            if (targetWebView == null) {
-                debugTrace("TRANSFER SELECTED: automationWebView() == null")
-                if (attempt < 15) {
-                    handler.postDelayed({ attempt(attempt + 1) }, 500L)
-                } else {
-                    logEvent("Resource Builder: WebView tidak tersedia saat Transfer Selected")
-                    pendingUpgradeUrl = ""
-                    pendingUpgradeCosts = longArrayOf(0L, 0L, 0L, 0L)
-                    goToNextBuilderVillage()
-                }
-                return
-            }
+    automationWebView()?.evaluateJavascript(js) { raw ->
+        val result = raw.orEmpty().trim('"').replace("\\\"", "\"")
+        debugTrace("TRANSFER SELECTED: result=$result")
 
-            targetWebView.evaluateJavascript(js) { raw ->
-                val result = raw.orEmpty()
-                    .trim('"')
-                    .replace("\\\"", "\"")
-                    .replace("\\n", " ")
-
-                debugTrace("TRANSFER SELECTED: attempt $attempt/15 result=$result")
-
-                if (result.contains("\"result\":\"clicked\"")) {
-                    logEvent("Resource Builder: Transfer selected diklik")
-                    val url = pendingUpgradeUrl
-                    // Beri waktu React menyelesaikan transfer sebelum kembali ke halaman upgrade.
-                    handler.postDelayed({ automationWebView()?.loadUrl(url) }, 1800L)
-                } else if (attempt < 15) {
-                    handler.postDelayed({ attempt(attempt + 1) }, 500L)
-                } else {
-                    logEvent("Resource Builder: tombol Transfer selected tidak ditemukan")
-                    pendingUpgradeUrl = ""
-                    pendingUpgradeCosts = longArrayOf(0L, 0L, 0L, 0L)
-                    goToNextBuilderVillage()
-                }
-            }
+        if (result.contains("\"ok\":true")) {
+            logEvent("Resource Builder: tulisan 'selected' ditemukan dan diklik")
+            val url = pendingUpgradeUrl
+            // Beri waktu agar request transfer selesai sebelum halaman upgrade dibuka.
+            handler.postDelayed({ automationWebView()?.loadUrl(url) }, 1800L)
+        } else if (inventoryUseAttempt < 20) {
+            inventoryUseAttempt++
+            handler.postDelayed({ clickTransferSelected() }, 500L)
+        } else {
+            logEvent("Resource Builder: tulisan 'selected' tidak ditemukan/gagal diklik")
+            pendingUpgradeUrl = ""
+            pendingUpgradeCosts = longArrayOf(0L,0L,0L,0L)
+            goToNextBuilderVillage()
         }
-
-        attempt(1)
     }
+}
 
     private fun useHeroInventoryForPendingUpgrade(): Unit {
         debugTrace("ENTER useHeroInventoryForPendingUpgrade")
