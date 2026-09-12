@@ -2877,7 +2877,12 @@ private fun clickTransferSelected() {
         webView?.destroy()
         webView = null
         instanceRef = null
-        visibleWebViewRef = null
+        // Jangan menghapus visibleWebViewRef di sini. MainActivity masih memiliki
+        // Live WebView yang sama saat service OFF -> ON. Jika reference dihapus
+        // ketika service lama dihancurkan, service baru akan membuat WebView
+        // tersembunyi sendiri sehingga Live View terlihat diam walaupun scheduler
+        // sebenarnya berjalan. MainActivity akan mengatur reference ini kembali
+        // saat WebView benar-benar dilepas.
         super.onDestroy()
     }
 
