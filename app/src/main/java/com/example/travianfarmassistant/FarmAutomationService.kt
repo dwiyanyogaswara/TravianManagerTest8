@@ -127,6 +127,7 @@ class FarmAutomationService : Service() {
     )
 
     private fun loadVillageDataRecordsFromPrefs(): List<VillageDataRecord> {
+        debugTrace("ENTER loadVillageDataRecordsFromPrefs")
         val raw = getSharedPreferences(PREFS, MODE_PRIVATE)
             .getString("village_data_json", "[]").orEmpty()
         val array = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return emptyList()
@@ -153,6 +154,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun loadBuilderStateFromVillageData(): Boolean {
+        debugTrace("ENTER loadBuilderStateFromVillageData")
         val records = loadVillageDataRecordsFromPrefs()
         builderVillages.clear()
         builderVillageLinks.clear()
@@ -301,6 +303,7 @@ class FarmAutomationService : Service() {
     private val logMaxAgeMs = 12 * 60 * 60 * 1000L
 
     override fun onCreate() {
+        debugTrace("ENTER onCreate")
         super.onCreate()
         instanceRef = WeakReference(this)
         createNotificationChannel()
@@ -309,6 +312,7 @@ class FarmAutomationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        debugTrace("ENTER onStartCommand")
         when (intent?.action) {
             ACTION_STOP -> stopAutomation(startId)
             ACTION_START -> {
@@ -334,19 +338,6 @@ class FarmAutomationService : Service() {
                     startForeground(NOTIFICATION_ID, buildNotification("Farm Assistant aktif — memulai bot"))
                 }
                 logEvent("Live Bot ON — ACTION_START diterima; memulai siklus bot sekarang")
-                // Pastikan callback/state sisa dari sesi sebelumnya tidak ikut terbawa.
-                // Ini penting untuk skenario OFF → ON tanpa menutup aplikasi.
-                handler.removeCallbacksAndMessages(null)
-                pendingStartAll = false
-                builderInProgress = false
-                loginInProgress = false
-                reloginRequested = false
-                villageRefreshInProgress = false
-                villageRefreshCompleted = true
-                villageRefreshClosed = true
-                countdownCyclePending = false
-                scheduledRefreshForNextRun = false
-                farmListCycleComplete = false
                 startAutomation()
             }
             null -> recoverAfterProcessRecreation()
@@ -355,6 +346,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun recoverAfterProcessRecreation() {
+        debugTrace("ENTER recoverAfterProcessRecreation")
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         if (!prefs.getBoolean("service_running", false)) return
         if (recoveringService) return
@@ -411,10 +403,12 @@ class FarmAutomationService : Service() {
     }
 
     private fun automationWebView(): WebView? {
+        debugTrace("ENTER automationWebView")
         return visibleWebViewRef?.get() ?: webView
     }
 
     private fun handleVisiblePageFinished(url: String) {
+        debugTrace("ENTER handleVisiblePageFinished")
         if (!running) return
         lastAutomationUrl = url
         val lower = url.lowercase(Locale.US)
@@ -422,6 +416,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun handleLoginResultFromVisibleWebView(result: String) {
+        debugTrace("ENTER handleLoginResultFromVisibleWebView")
         if (!running) return
         handler.post {
             if (!running) return@post
@@ -448,6 +443,7 @@ class FarmAutomationService : Service() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun ensureServiceWebView() {
+        debugTrace("ENTER ensureServiceWebView")
         if (webView != null) return
         webView = WebView(this@FarmAutomationService).apply {
             settings.javaScriptEnabled = true
@@ -464,6 +460,7 @@ class FarmAutomationService : Service() {
             addJavascriptInterface(FarmBridge(), "AndroidFarm")
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
+                    debugTrace("ENTER onPageFinished")
                     super.onPageFinished(view, url)
                     if (url == null || !running) return
                     lastAutomationUrl = url
@@ -471,6 +468,7 @@ class FarmAutomationService : Service() {
                 }
 
                 override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                    debugTrace("ENTER onRenderProcessGone")
                     logEvent("RECOVERY: WebView renderer mati; membuat WebView baru")
                     if (view === webView) {
                         webView = null
@@ -486,11 +484,13 @@ class FarmAutomationService : Service() {
     }
 
     private fun onVisibleWebViewDetachedInternal() {
+        debugTrace("ENTER onVisibleWebViewDetachedInternal")
         if (running && webView == null) ensureServiceWebView()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun startAutomation() {
+        debugTrace("ENTER startAutomation")
 
         // Jika tombol Bot diaktifkan kembali saat service/siklus lama masih aktif,
         // hentikan callback siklus lama terlebih dahulu agar tidak terjadi double cycle.
@@ -557,6 +557,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun triggerScheduledCycle() {
+        debugTrace("ENTER triggerScheduledCycle")
         if (!running) return
         countdownCyclePending = false
         scheduledRefreshForNextRun = false
@@ -600,12 +601,13 @@ class FarmAutomationService : Service() {
             logEvent("Farm List OFF — menunggu AUTO REFRESH VILLAGE sebelum Resource Builder")
             maybeStartResourceBuilderAfterRefresh()
         } else {
-            logEvent("CICLE END")
+            logEvent("Farm List OFF dan Resource Builder OFF — tidak ada aksi pada siklus ini")
             scheduleNextRandomRun()
         }
     }
 
     private fun triggerStartAllFarmLists() {
+        debugTrace("ENTER triggerStartAllFarmLists")
         if (!running || !farmListEnabled) return
         pendingStartAll = true
         startAllAttempt = 0
@@ -616,6 +618,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun handlePageAfterConsent(url: String, lower: String, attempt: Int): Unit {
+        debugTrace("ENTER handlePageAfterConsent")
         if (!running) return
         acceptCookiesIfPresent { result ->
             if (!running) return@acceptCookiesIfPresent
@@ -717,10 +720,12 @@ class FarmAutomationService : Service() {
             if (builderInProgress && lower.contains("build.php") && !lower.contains("gid=16")) {
                 if (builderStage == "TRANSFER_DONE") {
                     builderStage = "INSPECT_UPGRADE"
+                    debugTrace("Resource Builder: kembali ke halaman resource setelah transfer -> inspectUpgradeResources()")
                     handler.postDelayed({ inspectUpgradeResources() }, 700)
                 } else {
                     builderStage = "OPEN_TRANSFER"
                     pendingUpgradeUrl = automationWebView()?.url.orEmpty().ifBlank { "$server/build.php" }
+                    debugTrace("Resource Builder: masuk halaman resource -> inspectUpgradeResources()")
                     handler.postDelayed({ inspectUpgradeResources() }, 700)
                 }
                 return@acceptCookiesIfPresent
@@ -768,11 +773,13 @@ class FarmAutomationService : Service() {
     }
 
     private fun isLikelyLoginPage(url: String): Boolean {
+        debugTrace("ENTER isLikelyLoginPage")
         return url.contains("login") || url.contains("logout") ||
             url.contains("anmelden") || url.contains("signin")
     }
 
     private fun autoLoginIfNeeded() {
+        debugTrace("ENTER autoLoginIfNeeded")
         if (!running || !loginInProgress) return
         if (username.isBlank() || password.isBlank()) return
         loginRetryCount++
@@ -825,6 +832,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun detectLoginFormForScheduler() {
+        debugTrace("ENTER detectLoginFormForScheduler")
         automationWebView()?.evaluateJavascript("""
             (() => {
                 const visible = el => {
@@ -846,6 +854,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun clickStartAllFarmLists(): Unit {
+        debugTrace("ENTER clickStartAllFarmLists")
         if (!running || !pendingStartAll) return
         val js = """
             (() => {
@@ -947,6 +956,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun finishFarmListAfterOneMinute() {
+        debugTrace("ENTER finishFarmListAfterOneMinute")
         if (!running) return
         pendingStartAll = false
         fallbackFarmListMode = false
@@ -957,7 +967,10 @@ class FarmAutomationService : Service() {
                 .putLong("farm_cycle_duration_ms", farmDuration)
                 .putLong("farm_cycle_started_at", 0L)
                 .apply()
+            logEvent("Farm List: waktu proses ${formatDuration(farmDuration)}; jeda dispatch 60 detik selesai")
             farmListCycleStartedAt = 0L
+        } else {
+            logEvent("Farm List: jeda dispatch 60 detik selesai")
         }
 
         farmListCycleComplete = true
@@ -965,6 +978,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun verifyRaidDispatch(): Unit {
+        debugTrace("ENTER verifyRaidDispatch")
         if (!running) return
 
         // Farm List adalah aksi dispatch, bukan proses yang harus ditunggu sampai
@@ -1035,6 +1049,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun fallbackSequentialFarmListSend() {
+        debugTrace("ENTER fallbackSequentialFarmListSend")
         if (!running) return
         updateNotification("Farm List — fallback, menyelesaikan pengiriman")
         val js = """
@@ -1083,6 +1098,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun verifyFallbackRaidCompletion(): Unit {
+        debugTrace("ENTER verifyFallbackRaidCompletion")
         if (!running) return
 
         // Fallback hanya memastikan request sudah diberi kesempatan diproses.
@@ -1138,13 +1154,13 @@ class FarmAutomationService : Service() {
      * Strategi ini sengaja hanya melakukan satu upgrade per village per siklus.
      */
     private fun maybeStartResourceBuilderAfterRefresh() {
+        debugTrace("ENTER maybeStartResourceBuilderAfterRefresh")
         if (!running) return
         if (countdownCyclePending && !getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("cycle_active", false)) {
             logEvent("Resource Builder: refresh dijalankan untuk cycle berikutnya; menunggu countdown berakhir")
             return
         }
         if (!resourceBuilderEnabled) {
-            logEvent("CICLE END")
             scheduleNextRandomRun()
             return
         }
@@ -1161,14 +1177,14 @@ class FarmAutomationService : Service() {
     }
 
     private fun startAutomaticVillageRefresh() {
+        debugTrace("ENTER startAutomaticVillageRefresh")
         if (!running || villageRefreshInProgress || villageRefreshCompleted) return
         val records = loadVillageDataRecordsFromPrefs().filter { it.isChecklist && it.id.isNotBlank() }
         if (records.isEmpty()) {
-            logEvent("REFRESH VILLAGE START")
             villageRefreshCompleted = true
             villageRefreshInProgress = false
             villageRefreshClosed = true
-            logEvent("REFRESH VILLAGE END")
+            logEvent("AUTO REFRESH VILLAGE: tidak ada village checklist; refresh dianggap selesai")
             if (initialCyclePending) {
                 initialCyclePending = false
                 countdownCyclePending = false
@@ -1513,6 +1529,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun startResourceBuilderCycle() {
+        debugTrace("ENTER startResourceBuilderCycle")
         if (!running) return
         builderInProgress = true
         builderVillages.clear()
@@ -1531,7 +1548,7 @@ class FarmAutomationService : Service() {
                 .putLong("farm_cycle_duration_ms", farmDuration)
                 .putLong("farm_cycle_started_at", 0L)
                 .apply()
-            logEvent("CICLE END")
+            logEvent("Farm List: waktu proses ${formatDuration(farmDuration)}")
             farmListCycleStartedAt = 0L
         }
         resourceBuilderCycleStartedAt = now
@@ -1574,6 +1591,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun processResourceBuilderVillage() {
+        debugTrace("ENTER processResourceBuilderVillage")
         if (!running || !builderInProgress) return
 
         if (builderVillageIndex >= builderVillages.size) {
@@ -1614,6 +1632,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun openSavedBuilderResource(): Unit {
+        debugTrace("ENTER openSavedBuilderResource")
         if (!running || !builderInProgress || pendingBuilderResourceHref.isBlank()) return
         val (villageId, villageName) = builderVillages.getOrNull(builderVillageIndex) ?: return
         var href = absoluteBuilderHref(pendingBuilderResourceHref)
@@ -1636,6 +1655,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun clickBuilderVillageFromDorf(): Unit {
+        debugTrace("ENTER clickBuilderVillageFromDorf")
         if (!running || !builderInProgress) return
         val village = builderVillages.getOrNull(builderVillageIndex) ?: return
         val savedVillageHref = builderVillageLinks[village.first].orEmpty().trim()
@@ -1654,6 +1674,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun inspectUpgradeResources(): Unit {
+        debugTrace("ENTER inspectUpgradeResources")
         if (!running || !builderInProgress) return
 
         val currentUrl = automationWebView()?.url.orEmpty()
@@ -1681,6 +1702,7 @@ class FarmAutomationService : Service() {
     }
 
     private fun inspectUpgradeResourcesAfterDomReady(): Unit {
+        debugTrace("ENTER inspectUpgradeResourcesAfterDomReady")
         if (!running || !builderInProgress) return
 
         // ALUR UTAMA YANG DIMINTA:
@@ -1730,8 +1752,10 @@ class FarmAutomationService : Service() {
     }
 
     private fun clickRedResourceForTransfer() {
+        debugTrace("ENTER clickRedResourceForTransfer()")
 
         if (!running || !builderInProgress) {
+            debugTrace(
                 "HERO TRANSFER: batal — running=$running builderInProgress=$builderInProgress"
             )
             return
@@ -1801,10 +1825,12 @@ class FarmAutomationService : Service() {
         """.trimIndent()
 
         fun attempt(attempt: Int) {
+            debugTrace("HERO TRANSFER: attempt $attempt/8")
 
             val targetWebView = automationWebView()
 
             if (targetWebView == null) {
+                debugTrace("HERO TRANSFER: automationWebView() == null")
 
                 if (attempt < 8) {
                     handler.postDelayed({ attempt(attempt + 1) }, 700L)
@@ -1820,15 +1846,18 @@ class FarmAutomationService : Service() {
             targetWebView.evaluateJavascript(js) { result ->
                 val decoded = result?.trim('"') ?: ""
 
+                debugTrace(
                     "HERO TRANSFER: attempt $attempt/8 result=$decoded"
                 )
 
                 val normalized = decoded.replace("\\\"", "\"")
                 if (decoded.contains("\"ok\":true") || normalized.contains("\"ok\":true")) {
+                    debugTrace(
                         "HERO TRANSFER: BERHASIL klik .inlineIcon.resource.transfer"
                     )
                     handler.postDelayed({ clickTransferSelected() }, 900L)
                 } else if (attempt < 8) {
+                    debugTrace(
                         "HERO TRANSFER: resource transfer belum siap/gagal " +
                         "(attempt $attempt/8)"
                     )
@@ -1847,6 +1876,7 @@ class FarmAutomationService : Service() {
     }
 
 private fun clickTransferSelected() {
+        debugTrace("ENTER clickTransferSelected")
         if (!running || !builderInProgress || pendingUpgradeUrl.isBlank()) return
 
         val js = """
@@ -1957,6 +1987,7 @@ private fun clickTransferSelected() {
                 }, 1200L)
             } else if (inventoryUseAttempt < 15) {
                 inventoryUseAttempt++
+                debugTrace("HERO TRANSFER: tombol Transfer selected belum ditemukan, retry $inventoryUseAttempt/15")
                 handler.postDelayed({ clickTransferSelected() }, 500L)
             } else {
                 logEvent("Resource Builder: tombol Transfer selected tidak ditemukan setelah 15 percobaan")
@@ -1968,6 +1999,7 @@ private fun clickTransferSelected() {
     }
 
     private fun verifyTransferSelectedCompleted() {
+        debugTrace("ENTER verifyTransferSelectedCompleted")
         if (!running || !builderInProgress) return
 
         val js = """
@@ -2013,6 +2045,7 @@ private fun clickTransferSelected() {
                 handler.postDelayed({ clickResourceUpgrade() }, 700L)
             } else if (inventoryUseAttempt < 18) {
                 inventoryUseAttempt++
+                debugTrace("HERO TRANSFER: Transfer Selected masih ada; menunggu proses (${inventoryUseAttempt}/18)")
                 handler.postDelayed({ verifyTransferSelectedCompleted() }, 700L)
             } else {
                 logEvent("Resource Builder: Transfer Selected belum terkonfirmasi selesai; village dilewati demi mencegah upgrade palsu")
@@ -2024,6 +2057,7 @@ private fun clickTransferSelected() {
     }
 
     private fun useHeroInventoryForPendingUpgrade(): Unit {
+        debugTrace("ENTER useHeroInventoryForPendingUpgrade")
         if (!running || !builderInProgress || pendingUpgradeUrl.isBlank()) return
         inventoryUseAttempt++
         if (inventoryUseAttempt > 5) {
@@ -2101,6 +2135,7 @@ private fun clickTransferSelected() {
     }
 
     private fun fillHeroResourceDialog(): Unit {
+        debugTrace("ENTER fillHeroResourceDialog")
         if (!running || !builderInProgress || pendingUpgradeUrl.isBlank()) return
         val needed = pendingUpgradeCosts.joinToString(",")
         val js = """
@@ -2161,6 +2196,7 @@ private fun clickTransferSelected() {
     }
 
     private fun clickResourceUpgrade() {
+        debugTrace("ENTER clickResourceUpgrade")
         if (!running || !builderInProgress) return
 
         val currentUrl = automationWebView()?.url.orEmpty()
@@ -2220,13 +2256,14 @@ private fun clickTransferSelected() {
                 handler.postDelayed({ inspectUpgradeResources() }, 900)
             } else {
                 pendingUpgradeUrl = ""
-                logEvent("Resource Builder: upgrade tidak tersedia di ${builderVillages.getOrNull(builderVillageIndex)?.second ?: "village ${builderVillageIndex + 1}"}")
+                logEvent("Resource Builder: tombol upgrade tidak ditemukan di ${builderVillages.getOrNull(builderVillageIndex)?.second ?: "village ${builderVillageIndex + 1}"}")
                 goToNextBuilderVillage()
             }
         }
     }
 
     private fun goToNextBuilderVillage() {
+        debugTrace("ENTER goToNextBuilderVillage")
         if (!builderInProgress) return
 
         // Cegah callback ganda menaikkan index dua kali.
@@ -2247,6 +2284,7 @@ private fun clickTransferSelected() {
     }
 
     private fun finishResourceBuilderCycle() {
+        debugTrace("ENTER finishResourceBuilderCycle")
         val now = System.currentTimeMillis()
         if (resourceBuilderCycleStartedAt > 0L) {
             val duration = (now - resourceBuilderCycleStartedAt).coerceAtLeast(0L)
@@ -2270,6 +2308,7 @@ private fun clickTransferSelected() {
     }
 
     private fun loadBuilderVillagesFromSnapshot(): MutableList<Pair<String, String>> {
+        debugTrace("ENTER loadBuilderVillagesFromSnapshot")
         val array = runCatching { org.json.JSONArray(selectedBuilderVillagesJson) }.getOrNull()
             ?: return mutableListOf()
         val out = mutableListOf<Pair<String, String>>()
@@ -2295,6 +2334,7 @@ private fun clickTransferSelected() {
     }
 
     private fun refreshBuilderSelectionFromPrefs() {
+        debugTrace("ENTER refreshBuilderSelectionFromPrefs")
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         builderSelectionConfigured = prefs.getBoolean("resource_builder_selection_configured", builderSelectionConfigured)
         selectedBuilderVillageIds = prefs.getStringSet(
@@ -2325,6 +2365,7 @@ private fun clickTransferSelected() {
     }
 
     private fun discoverVillagesForBuilder() {
+        debugTrace("ENTER discoverVillagesForBuilder")
         if (!running || !builderInProgress) return
         if (builderVillages.isNotEmpty() || builderStage != "DISCOVER" || builderDiscoverInFlight) return
         builderDiscoverInFlight = true
@@ -2463,6 +2504,7 @@ private fun clickTransferSelected() {
     }
 
     private fun handleVillageListResult(rawJson: String) {
+        debugTrace("ENTER handleVillageListResult")
         builderDiscoverInFlight = false
         if (!running || !builderInProgress) return
 
@@ -2556,6 +2598,7 @@ private fun clickTransferSelected() {
     }
 
     private fun scheduleNextRandomRun() {
+        debugTrace("ENTER scheduleNextRandomRun")
         if (!running) return
         persistActiveCycleDuration()
         handler.removeCallbacks(cycleWatchdogRunnable)
@@ -2589,12 +2632,14 @@ private fun clickTransferSelected() {
     }
 
     private fun updateNextRun(delayMs: Long) {
+        debugTrace("ENTER updateNextRun")
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putLong("next_run_at", if (delayMs == 0L) 0L else nextAt)
             .apply()
     }
 
     private fun acceptCookiesIfPresent(done: (String) -> Unit) {
+        debugTrace("ENTER acceptCookiesIfPresent")
         val js = """
             (() => {
               const visible = el => {
@@ -2625,6 +2670,7 @@ private fun clickTransferSelected() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun recoverWebView() {
+        debugTrace("ENTER recoverWebView")
         if (!running || webViewRecoveryInProgress) return
         webViewRecoveryInProgress = true
         try {
@@ -2649,6 +2695,7 @@ private fun clickTransferSelected() {
     }
 
     private fun stopAutomation(stopStartId: Int? = null) {
+        debugTrace("ENTER stopAutomation")
         persistActiveCycleDuration()
         // Nonaktifkan bot = hentikan siklus yang sedang berjalan dan seluruh callback tertunda.
         running = false
@@ -2677,9 +2724,7 @@ private fun clickTransferSelected() {
             .apply()
         logEvent("Background service dihentikan")
         stopForeground(STOP_FOREGROUND_REMOVE)
-        // Hanya hentikan service jika request STOP ini masih merupakan startId terbaru.
-        // Jika user cepat menekan OFF lalu ON, ACTION_START mendapat startId baru
-        // sehingga service lama tidak ikut mematikan instance yang baru aktif.
+        // Gunakan startId agar request STOP lama tidak mematikan sesi START yang baru.
         if (stopStartId != null) {
             stopSelfResult(stopStartId)
         } else {
@@ -2688,11 +2733,13 @@ private fun clickTransferSelected() {
     }
 
     private fun updateNotification(text: String) {
+        debugTrace("ENTER updateNotification")
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(text))
     }
 
     private fun buildNotification(text: String): Notification {
+        debugTrace("ENTER buildNotification")
         val intent = Intent(this, MainActivity::class.java)
         val pending = PendingIntent.getActivity(
             this, 0, intent,
@@ -2725,6 +2772,7 @@ private fun clickTransferSelected() {
     }
 
     private fun createNotificationChannel() {
+        debugTrace("ENTER createNotificationChannel")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "Farm Assistant Background", NotificationManager.IMPORTANCE_LOW)
@@ -2733,48 +2781,25 @@ private fun clickTransferSelected() {
     }
 
     private fun normalizeServer(value: String): String {
+        debugTrace("ENTER normalizeServer")
         var s = value.trim()
         if (s.isBlank()) s = "https://ts20.x2.europe.travian.com"
         if (!s.startsWith("http")) s = "https://$s"
         return s.trimEnd('/')
     }
 
-    /** App log intentionally contains only the concise user-facing bot events. */
-    private fun logEvent(message: String) {
-        val cleanMessage = when {
-            message.startsWith("Siklus dimulai pada ") -> "CICLE START"
-            message.startsWith("Send All Farm Lists diklik;") -> "Click Send All Farmlist Success"
-            message == "Farm List: Send All berhasil; menunggu 60 detik sebelum Resource Builder" -> null
-            message.startsWith("Resource Builder: upgrade berhasil diklik di ") -> {
-                val village = message.removePrefix("Resource Builder: upgrade berhasil diklik di ").trim()
-                val villageId = builderVillages.getOrNull(builderVillageIndex)?.first
-                val currentLevel = villageId?.let { builderResourceLevels[it] } ?: -1
-                val targetLevel = if (currentLevel >= 0) currentLevel + 1 else -1
-                if (targetLevel > 0) "Village $village Upgrade to Level $targetLevel Success" else null
-            }
-            message.startsWith("Resource Builder: upgrade tidak tersedia di ") -> {
-                val village = message.removePrefix("Resource Builder: upgrade tidak tersedia di ").trim()
-                if (village.isNotBlank()) "Village $village no upgrade" else null
-            }
-            message.startsWith("AUTO REFRESH VILLAGE: mulai") -> "REFRESH VILLAGE START"
-            message.startsWith("AUTO REFRESH VILLAGE: selesai") -> "REFRESH VILLAGE END"
-            message.startsWith("AUTO REFRESH VILLAGE: ") && message.contains(" updated — min=L") -> {
-                val body = message.removePrefix("AUTO REFRESH VILLAGE: ")
-                val village = body.substringBefore(" updated —")
-                val level = Regex("min=L(\\d+)").find(message)?.groupValues?.get(1)
-                if (village.isNotBlank() && level != null) "Village $village Updated min Lvl $level" else null
-            }
-            message.startsWith("Countdown dimulai:") -> {
-                Regex("Next Run=([0-9]{2}:[0-9]{2})").find(message)?.groupValues?.get(1)?.let { "Next Run: $it" }
-            }
-            message == "Resource Builder: siklus selesai" -> "CICLE END"
-            message == "Live Bot ON — ACTION_START diterima; memulai siklus bot sekarang" -> "BOT ON"
-            message == "Background service dihentikan" -> "BOT OFF"
-            else -> null
-        } ?: return
+    /** Verbose diagnostics: every function entry is sent to Logcat and, except high-frequency UI helpers, to the app log. */
+    private fun debugTrace(message: String) {
+        android.util.Log.d("TravianFarmAssistant", "[DEBUG] $message")
+        val quiet = message.removePrefix("ENTER ").substringBefore("(")
+        if (quiet !in setOf("updateCountdown", "refreshRecentLogs", "pruneLogs", "showLogs")) {
+            logEvent("[DEBUG] $message")
+        }
+    }
 
+    private fun logEvent(message: String) {
         val cycleTag = if (cycleNumber > 0) "[CYCLE $cycleNumber]" else "[SYSTEM]"
-        val line = "${logTimeFormat.format(Date())} | $cycleTag $cleanMessage"
+        val line = "${logTimeFormat.format(Date())} | $cycleTag $message"
         try {
             openFileOutput(logFileName, MODE_APPEND).bufferedWriter().use { it.appendLine(line) }
             pruneLogs()
@@ -2782,6 +2807,7 @@ private fun clickTransferSelected() {
     }
 
     private fun pruneLogs() {
+        debugTrace("ENTER pruneLogs")
         try {
             val file = getFileStreamPath(logFileName)
             if (!file.exists()) return
@@ -2797,6 +2823,7 @@ private fun clickTransferSelected() {
     inner class FarmBridge {
         @JavascriptInterface
         fun onLoginResult(result: String) {
+            debugTrace("ENTER onLoginResult")
             handler.post {
                 if (!running) return@post
                 when (result) {
@@ -2822,6 +2849,7 @@ private fun clickTransferSelected() {
 
         @JavascriptInterface
         fun onVillageListResult(result: String) {
+            debugTrace("ENTER onVillageListResult")
             handler.post {
                 handleVillageListResult(result)
             }
@@ -2829,6 +2857,7 @@ private fun clickTransferSelected() {
     }
 
     override fun onDestroy() {
+        debugTrace("ENTER onDestroy")
         handler.removeCallbacksAndMessages(null)
         webView?.destroy()
         webView = null
@@ -2838,6 +2867,7 @@ private fun clickTransferSelected() {
     }
 
     override fun onBind(intent: Intent?): IBinder? {
+        debugTrace("ENTER onBind")
         return null
     }
 }
