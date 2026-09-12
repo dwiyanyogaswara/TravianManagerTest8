@@ -331,6 +331,13 @@ class FarmAutomationService : Service() {
                     ?: (getSharedPreferences(PREFS, MODE_PRIVATE).getStringSet("resource_builder_selected_villages", emptySet()) ?: emptySet())
                 selectedBuilderVillagesJson = intent.getStringExtra(EXTRA_SELECTED_VILLAGES_JSON)
                     ?: getSharedPreferences(PREFS, MODE_PRIVATE).getString("resource_builder_villages_json", "[]").orEmpty()
+
+                // Pastikan service kembali aktif saat Live Bot dinyalakan setelah sebelumnya dimatikan.
+                // ACTION_START dapat datang ke instance service baru karena stopAutomation() memanggil stopSelf().
+                runCatching {
+                    startForeground(NOTIFICATION_ID, buildNotification("Farm Assistant aktif — memulai bot"))
+                }
+                logEvent("Live Bot ON — ACTION_START diterima; memulai siklus bot sekarang")
                 startAutomation()
             }
             null -> recoverAfterProcessRecreation()
@@ -718,8 +725,8 @@ class FarmAutomationService : Service() {
                 } else {
                     builderStage = "OPEN_TRANSFER"
                     pendingUpgradeUrl = automationWebView()?.url.orEmpty().ifBlank { "$server/build.php" }
-                    debugTrace("Resource Builder: masuk halaman resource -> clickRedResourceForTransfer()")
-                    handler.postDelayed({ clickRedResourceForTransfer() }, 700)
+                    debugTrace("Resource Builder: masuk halaman resource -> inspectUpgradeResources()")
+                    handler.postDelayed({ inspectUpgradeResources() }, 700)
                 }
                 return@acceptCookiesIfPresent
             }
