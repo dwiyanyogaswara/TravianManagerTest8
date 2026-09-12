@@ -314,7 +314,7 @@ class FarmAutomationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         debugTrace("ENTER onStartCommand")
         when (intent?.action) {
-            ACTION_STOP -> stopAutomation()
+            ACTION_STOP -> stopAutomation(startId)
             ACTION_START -> {
                 server = normalizeServer(intent.getStringExtra(EXTRA_SERVER).orEmpty())
                 username = intent.getStringExtra(EXTRA_USERNAME).orEmpty().trim()
@@ -338,6 +338,19 @@ class FarmAutomationService : Service() {
                     startForeground(NOTIFICATION_ID, buildNotification("Farm Assistant aktif — memulai bot"))
                 }
                 logEvent("Live Bot ON — ACTION_START diterima; memulai siklus bot sekarang")
+                // Pastikan callback/state sisa dari sesi sebelumnya tidak ikut terbawa.
+                // Ini penting untuk skenario OFF → ON tanpa menutup aplikasi.
+                handler.removeCallbacksAndMessages(null)
+                pendingStartAll = false
+                builderInProgress = false
+                loginInProgress = false
+                reloginRequested = false
+                villageRefreshInProgress = false
+                villageRefreshCompleted = true
+                villageRefreshClosed = true
+                countdownCyclePending = false
+                scheduledRefreshForNextRun = false
+                farmListCycleComplete = false
                 startAutomation()
             }
             null -> recoverAfterProcessRecreation()
@@ -2694,7 +2707,7 @@ private fun clickTransferSelected() {
         }, 250L)
     }
 
-    private fun stopAutomation() {
+    private fun stopAutomation(stopStartId: Int? = null) {
         debugTrace("ENTER stopAutomation")
         persistActiveCycleDuration()
         // Nonaktifkan bot = hentikan siklus yang sedang berjalan dan seluruh callback tertunda.
@@ -2724,7 +2737,14 @@ private fun clickTransferSelected() {
             .apply()
         logEvent("Background service dihentikan")
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        // Hanya hentikan service jika request STOP ini masih merupakan startId terbaru.
+        // Jika user cepat menekan OFF lalu ON, ACTION_START mendapat startId baru
+        // sehingga service lama tidak ikut mematikan instance yang baru aktif.
+        if (stopStartId != null) {
+            stopSelfResult(stopStartId)
+        } else {
+            stopSelf()
+        }
     }
 
     private fun updateNotification(text: String) {
